@@ -88,6 +88,12 @@ KOReader master and tested on a **Boox Go 10.3 gen 1** (Android, EMR pen,
 - KOReader-on-Android logs go to **logcat** (`adb logcat`), NOT crash.log.
   `logger.info` calls in this plugin are already in place at mode
   enter/exit and save/load.
+- **adb is set up and verified** against the device (USB debugging
+  authorized; device serial 60F6786D, model "Go103").
+  `adb logcat -d -s KOReader:V` shows the plugin's log lines.
+  The KOReader/launcher startup lines rotate out of the buffer quickly —
+  to see them, have the user exit + relaunch KOReader, then dump
+  `adb logcat -d -t 500`.
 
 ## Verified platform facts (each cost real debugging time — trust these)
 
@@ -192,11 +198,13 @@ Untried ideas, roughly in order of expected value:
    logcat). If one refresh costs ≥33 ms, the cadence is self-defeating and
    should adapt (e.g. next-refresh-delay = 2× last measured cost).
    Also measure whether cost scales with region size or is ~fixed.
-2. **Check which e-ink platform the launcher detected** (logcat prints it
-   at startup; android-luajit-launcher has per-vendor EPD controllers,
-   Onyx included). If the Onyx path isn't being hit, `refreshFast` may be
-   falling back to a generic (slow) update. KOReader's Android e-ink
-   settings (top menu → gear → Screen → E-ink) may also matter.
+2. ~~Check which e-ink platform the launcher detected~~ **ANSWERED**
+   (2026-07-02, via adb logcat at KOReader startup on the Go 10.3):
+   `EPD: Using Onyx/Qualcomm driver` — platform detection is correct, the
+   Onyx EPD controller is in use. So slowness is NOT a missing-driver
+   fallback; focus on (1), (3), (4). KOReader's Android e-ink settings
+   (top menu → gear → Screen → E-ink) may still be worth a look for
+   waveform behavior.
 3. **Blit only the dirty rect.** The full-bb blit per refresh is plugin-
    invisible but fixable in `framebuffer_android.lua` (`_updateWindow`) —
    ANativeWindow_lock accepts a dirty rect. Could be prototyped as a
