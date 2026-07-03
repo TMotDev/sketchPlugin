@@ -12,7 +12,7 @@ devices. Written for — and only tested on — an **Onyx Boox Go 10.3**.
 
 ## Videos
 
-<video controls src="video.mp4" title="Showcase of sketch plugin"></video>
+https://github.com/user-attachments/assets/55a18c16-76dc-457c-9f91-60946ec79331
 
 ## What it does
 
