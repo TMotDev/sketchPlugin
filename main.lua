@@ -24,6 +24,7 @@ mysticknits (https://github.com/mysticknits/pencil.koplugin, AGPL-3.0).
 
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
+local ButtonDialog = require("ui/widget/buttondialog")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -321,6 +322,7 @@ function Sketch:exitSketchMode(save)
         UIManager:close(self.canvas)
         self.canvas = nil
         self.toolbar_frame = nil
+        self.width_button = nil
     end
     self.sketch_mode = false
     -- Full repaint: clears discarded ink and any fast-refresh artifacts.
@@ -1280,16 +1282,21 @@ function Sketch:buildIsland()
     local tool_label = self.current_tool == TOOL_PEN and _("Pen") or _("Eraser")
     local width_label = T(_("%1 px"), self.pen_width)
 
+    -- Kept as a field: the width picker dialog anchors to this button.
+    self.width_button = btn(width_label, function() self:showWidthPicker() end)
+
     local group = HorizontalGroup:new{
         btn(tool_label, function() self:toggleTool() end),
         span(),
-        btn(width_label, function() self:cyclePenWidth() end),
+        self.width_button,
         span(),
         btn(_("Undo"), function() self:undo() end),
         span(),
         btn(_("Redo"), function() self:redo() end),
         span(),
         btn(_("Save"), function() self:exitSketchMode(true) end),
+        span(),
+        btn(_("Clear"), function() self:onClearButton() end),
         span(),
         btn(_("Cancel"), function() self:onCancelButton() end),
     }
@@ -1339,16 +1346,56 @@ function Sketch:toggleTool()
     self:refreshIsland()
 end
 
-function Sketch:cyclePenWidth()
-    for i, w in ipairs(PEN_WIDTHS) do
-        if w == self.pen_width then
-            self.pen_width = PEN_WIDTHS[i % #PEN_WIDTHS + 1]
-            break
-        end
+-- Width picker: a small list anchored to the island's width button —
+-- opens upward when the island sits in the lower half of the screen (its
+-- default position), downward when it has been dragged to the top.
+function Sketch:showWidthPicker()
+    local dialog
+    local buttons = {}
+    for _, w in ipairs(PEN_WIDTHS) do
+        table.insert(buttons, {
+            {
+                text = (w == self.pen_width and "\u{2713} " or "") .. T(_("%1 px"), w),
+                callback = function()
+                    self.pen_width = w
+                    G_reader_settings:saveSetting("sketch_pen_width", w)
+                    UIManager:close(dialog)
+                    self:refreshIsland()
+                end,
+            },
+        })
     end
-    if not self.pen_width then self.pen_width = PEN_WIDTHS[1] end
-    G_reader_settings:saveSetting("sketch_pen_width", self.pen_width)
-    self:refreshIsland()
+    dialog = ButtonDialog:new{
+        buttons = buttons,
+        anchor = function()
+            local d = self.width_button and self.width_button.dimen
+            if not d then return end -- island not painted yet: centered fallback
+            if d.y + math.floor(d.h / 2) > math.floor(Screen:getHeight() / 2) then
+                -- Drop-up: dialog bottom sits just above the button.
+                return Geom:new{ x = d.x, y = d.y - Size.padding.small, w = 0, h = 0 }
+            else
+                -- Drop-down: dialog top sits just below the button.
+                return Geom:new{ x = d.x, y = d.y + d.h + Size.padding.small, w = 0, h = 0 }, true
+            end
+        end,
+    }
+    UIManager:show(dialog)
+end
+
+function Sketch:onClearButton()
+    local page = self:getCurrentPage()
+    local indices = self.page_strokes[page]
+    if not indices or #indices == 0 then
+        UIManager:show(InfoMessage:new{ text = _("Nothing to clear on this page"), timeout = 1 })
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = _("Clear all sketches on this page?"),
+        ok_text = _("Clear"),
+        ok_callback = function()
+            self:clearPageStrokes()
+        end,
+    })
 end
 
 function Sketch:onCancelButton()

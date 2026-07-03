@@ -54,9 +54,13 @@ setting directly controls inking smoothness.
   path.
 - Draw with the pen. The tool island at the bottom:
   - **Pen/Eraser** — toggles tool. The eraser deletes whole strokes it touches.
-  - **N px** — cycles pen width (3/5/7/9).
+  - **N px** — opens a width picker (3/5/7/9) anchored to the button:
+    it drops up when the island is in the lower half of the screen,
+    down otherwise.
   - **Undo / Redo** — per-session history, works across pages.
   - **Save** — saves and leaves sketch mode.
+  - **Clear** — clears all sketches on the current page (asks first;
+    undoable while the session lasts).
   - **Cancel** — discards everything drawn/erased this session, leaves mode.
   - Drag the island if it is in the way.
 - The device Back key saves and leaves sketch mode.
