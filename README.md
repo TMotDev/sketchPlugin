@@ -47,11 +47,11 @@ setting directly controls inking smoothness.
 ## Usage
 
 - Enter sketch mode (gesture or Tools → Sketch → Enter sketch mode).
-- Tools → Sketch → **Performance** has two switches (both default on):
-  **Raw pen input** (full-fidelity, low-latency point capture) and
-  **Fast partial screen flush** (dirty-rect blitting). Turn one off if
-  drawing ever misbehaves — that reverts to the slower but battle-tested
-  path.
+- Tools → Sketch → **Performance**: **Raw pen input** (full-fidelity,
+  low-latency point capture; default on — turn it off if drawing ever
+  misbehaves) and **Dirty-rect screen flush** (default off — measured
+  slower than plain full blits on Onyx; kept for testing on other
+  devices).
 - Draw with the pen. The tool island at the bottom:
   - **Pen/Eraser** — toggles tool. The eraser deletes whole strokes it touches.
   - **N px** — opens a width picker (3/5/7/9) anchored to the button:
@@ -257,8 +257,9 @@ KOReader master and tested on a **Boox Go 10.3 gen 1** (Android, EMR pen,
   Any Lua error in the raw path logs, reverts to gesture drawing for the
   session, and never breaks input. Claiming is skipped under software
   rotation (gesture path handles coordinate adjustment there).
-- **Fast flush** ("Fast flush" section, default on, setting
-  `sketch_fast_flush`, Android-only): `Screen._updateWindow` is patched
+- **Fast flush** ("Fast flush" section; default OFF since experiment #2 —
+  the dirty-rect lock measured ~2× slower than plain full blits on Onyx;
+  setting `sketch_fast_flush`, Android-only): `Screen._updateWindow` is patched
   (again owner-rebound, installed once). When `Screen._sketch_dirty_rect`
   is set — only ever around the live-ink `Screen:refreshFast(region)` in
   `maybeRefresh` — the patched method locks the ANativeWindow with that
@@ -334,59 +335,72 @@ the worst case equals the previous behavior.
   keeps every input frame; the ~60 Hz MotionEvent ceiling (fact 9) is
   confirmed as the input rate.
 - The dirty-rect blit works: **blit 7–8 ms** (the 18 MB blit is gone).
-- The dominant cost is now **ANativeWindow_lock at 39–45 ms**: the lock
-  blocks until the compositor frees a buffer, i.e. we wait for Onyx's
-  system refresh to consume the previously posted frame. Total flush avg
-  47–53 ms → the adaptive interval settles at ~70–90 ms (~12 flushes/s),
-  which is exactly what keeps input responsive despite the slow lock.
+- With the dirty-rect flush, the dominant cost was **ANativeWindow_lock
+  at 39–45 ms** (total avg 47–53 ms → interval 70–90 ms, ~12 flushes/s).
+- **Follow-up discovery (same day, evening logs):** when the dirty-rect
+  path was sidelined, plain full-blit flushes (stock `_updateWindow`)
+  measured **avg 21–25 ms → interval 34–43 ms, ~25 flushes/s — double
+  the flush rate.** Mechanism: locking with a dirty rect makes the
+  compositor copy the previous *front* buffer back into the dequeued
+  buffer, so the lock waits for the front buffer's release — serialized
+  with Onyx's system refresh. A plain lock just dequeues any free buffer,
+  and the full 18 MB blit that overwrites it costs only ~8 ms. The
+  "optimization" was a pessimization → dirty-rect flush now defaults OFF
+  (experiment #2).
 
 To re-measure: `adb logcat -c`, draw, then
 `adb logcat -d -s KOReader:V | Select-String sketch-perf` (PowerShell).
-The mode-entry log line shows which paths are active
-(`raw input: on - fast flush: active`).
+The mode-entry log line shows which paths are active. If a NATIVE crash
+(FORTIFY / SIGABRT) ever happens again: reproduce it, then immediately
+run `adb logcat -d -b crash` — the tombstone with the native backtrace
+rotates out of the buffer quickly.
 
-Cost model per live-ink refresh on the Go 10.3: dirty-rect lock (blocks
-on the compositor, ~40 ms) + region blit (~8 ms) + post — there is no
-einkUpdate on this path at all (fact 5); the EPD update itself is
-performed by Onyx's system refresh, whose waveform/latency follows the
-per-app refresh mode. The native Boox notes app remains faster in
-principle (hardware pen overlay, composited under the pen before software
-sees anything); the remaining gap is the lock wait + the ~60 Hz input
-rate, not our software path.
+Cost model per live-ink refresh on the Go 10.3 (current defaults): plain
+window lock (~13–17 ms dequeue) + full 18 MB blit (~8 ms) + post, avg
+21–25 ms; there is no einkUpdate on this path at all (fact 5) — the EPD
+update is performed by Onyx's system refresh, whose waveform/latency
+follows the per-app refresh mode. The native Boox notes app remains
+faster in principle (hardware pen overlay, composited under the pen
+before software sees anything); the remaining gap is the system-refresh
+pacing + the ~60 Hz input rate, not our software path.
 
 ### Performance experiment log
 
 One experiment at a time; each gets a toggle, a hypothesis, and a verdict
 after a device test.
 
-- **#1 — direct regional einkUpdate** (2026-07-03; Sketch → Performance →
-  *Direct e-ink refresh (experimental)*; default OFF; setting
-  `sketch_direct_eink`). On Onyx, KOReader never requests partial EPD
-  updates (fact 5) — the panel update for live ink is whenever Onyx's
-  system refresh decides. This toggle makes every live-ink flush also
-  call `android.einkUpdate(fast, delay_fast, x, y, right, bottom)`
-  (constants from `android.getEinkConstants()`; on Onyx fast =
-  PARTIAL+DU = 1; goes through the launcher's reflection into hidden
-  `View.refreshScreen` — the same plumbing full refreshes already use on
-  this device, so it's known to invoke successfully). Hypotheses:
-  (a) ink appears with a fast *fixed* DU waveform instead of the system
-  refresh's choice → lower, more consistent latency; (b) possibly earlier
-  buffer release → lower `lock` in sketch-perf. Risk: the Kotlin side
-  calls `preventSystemRefresh()` (waveform scheme "None") before each
-  request — if partial updates stop appearing outside sketch mode, toggle
-  OFF and trigger a flashing full refresh (or restart KOReader). A/B
-  procedure: draw with it off (note `avg`/`lock` + feel), toggle on,
-  repeat; the sketch-perf line carries `direct=true/false`.
-  **Verdict: PENDING device test.**
+- **#1 — direct regional einkUpdate** (2026-07-03). Made every live-ink
+  flush also call `android.einkUpdate(fast=PARTIAL+DU, delay_fast, x, y,
+  right, bottom)` through the launcher's reflection into hidden
+  `View.refreshScreen`, hoping for a fixed fast waveform and earlier
+  buffer release. **Verdict: FAILED — code removed.** Measurably slower
+  (avg 56–58 ms vs 46–50 ms without), and strongly suspected of
+  corrupting the window/EPD state: in the same process, immediately
+  after its use, the dirty-rect lock started failing permanently
+  (sketch-perf went from all-fast to 0-fast flushes), and the next heavy
+  dialog paint aborted natively with `FORTIFY: pthread_mutex_lock called
+  on a destroyed mutex`. The Kotlin side's `preventSystemRefresh()`
+  (waveform scheme "None" via reflection) is the suspected culprit. Do
+  not reintroduce without solving that. (The "width picker crashes the
+  app" report from that day is attributed to this — the picker is a
+  plain ButtonDialog with `anchor`, both fully supported by the
+  installed v2026.03, and a pure-Lua bug cannot raise a native FORTIFY
+  abort. Needs a clean re-test.)
+- **#2 — drop the dirty-rect flush, keep plain full blits**
+  (2026-07-03). Accidental A/B from the same logs (the dirty path had
+  tripped its fallback): full-blit flushes avg 21–25 ms / interval
+  34–43 ms vs dirty-rect 46–58 ms / interval 66–91 ms — the dirty-rect
+  lock's front-buffer copy-back serializes with the system refresh (see
+  measured-numbers section). **Verdict: ADOPTED — `sketch_fast_flush`
+  now defaults OFF** (toggle renamed "Dirty-rect screen flush", kept for
+  non-Onyx testing). Live ink now flushes ~25×/s.
 
 Remaining ideas, in order of expected value:
 
-1. **Attack the ~40 ms lock wait.** Zero-code first: set Onyx's per-app
-   refresh mode for KOReader (system E-ink center: Speed/A2/X modes) and
-   compare `lock` in sketch-perf — a faster system waveform should free
-   buffers sooner. Code-side afterwards: investigate
-   `ANativeWindow_setBuffersGeometry` / buffer-count effects so the lock
-   returns a free buffer immediately instead of waiting out the refresh.
+1. **Onyx per-app refresh mode** (zero-code, user-side): set KOReader to
+   Speed/A2/X in the system E-ink center and compare sketch-perf `avg`
+   plus ink feel — the system refresh both displays our ink (fact 5) and
+   gates buffer release, so this affects the whole pipeline.
 2. **Raise the input rate** past ~60 Hz: `AMotionEvent_getHistorical*`
    samples are dropped in `base/ffi/input_android.lua` (fact 9). Options:
    koreader-base PR (clean, benefits everyone), or shadow the module from
