@@ -165,6 +165,7 @@ local Sketch = InputContainer:extend{
 
     canvas = nil,         -- SketchCanvas window while sketch mode is active
     toolbar_frame = nil,  -- island FrameContainer, used for hit-testing
+    island_movable = nil, -- island MovableContainer; kept to preserve the drag offset across rebuilds
 
     -- Batched partial refresh while drawing (see addPointToStroke).
     -- Each refresh blocks the input loop for the blit + e-ink update, so a
@@ -323,7 +324,7 @@ function Sketch:exitSketchMode(save)
     end
     self.sketch_mode = false
     -- Full repaint: clears discarded ink and any fast-refresh artifacts.
-    UIManager:setDirty(self.view, "partial")
+    UIManager:setDirty(self.view.dialog, "partial")
     logger.info("Sketch: left sketch mode, saved =", save and true or false)
 end
 
@@ -466,7 +467,7 @@ function Sketch:abortInProgressContact()
         -- Repaint to wipe the stray ink — only where it was drawn.
         local region = self:strokesRegion({ self.current_stroke })
         self.current_stroke = nil
-        UIManager:setDirty(self.view, "ui", region)
+        UIManager:setDirty(self.view.dialog, "ui", region)
     end
 end
 
@@ -644,6 +645,10 @@ end
 
 function Sketch:rawShouldClaim(mt)
     if not self.sketch_mode or not self.canvas then return false end
+    -- Never claim while a dialog (ConfirmBox, InfoMessage, ...) sits above
+    -- the canvas: the contact belongs to it — claiming would eat its taps
+    -- AND ink right over it, since raw capture bypasses window routing.
+    if UIManager:getTopmostVisibleWidget() ~= self.canvas then return false end
     if self.raw_claimed_slot then return false end
     -- Only a lone contact can start ink (matches the gesture path: a
     -- second finger means a multi-finger gesture).
@@ -1041,7 +1046,7 @@ function Sketch:scheduleDelayedRefresh()
         self.pending_refresh = nil
         local region = self:bboxToRegion(self.cleanup_region, 0)
         self.cleanup_region = nil
-        UIManager:setDirty(self.view, "ui", region)
+        UIManager:setDirty(self.view.dialog, "ui", region)
     end
     UIManager:scheduleIn(self.refresh_delay_ms / 1000, self.pending_refresh)
 end
@@ -1174,7 +1179,7 @@ function Sketch:eraseAt(x, y)
     -- Repaint so erased ink disappears under the finger — but only refresh
     -- the erased strokes' area; a full-screen e-ink pass here would make
     -- every eraser hit take ~half a second.
-    UIManager:setDirty(self.view, "ui", self:strokesRegion(deleted))
+    UIManager:setDirty(self.view.dialog, "ui", self:strokesRegion(deleted))
 end
 
 function Sketch:finalizeErase()
@@ -1245,7 +1250,7 @@ function Sketch:afterHistoryChange(op)
     if op then
         region = self:strokesRegion(op.type == "add" and { op.stroke } or op.strokes)
     end
-    UIManager:setDirty(self.view, "ui", region)
+    UIManager:setDirty(self.view.dialog, "ui", region)
 end
 
 -- ------------------------------------------------------------------------
@@ -1297,13 +1302,25 @@ function Sketch:buildIsland()
         group,
     }
 
+    -- The island is rebuilt whenever its labels change; a fresh
+    -- MovableContainer would reset a dragged island back to its origin,
+    -- so carry the drag offset over to the new one.
+    local offset_x, offset_y = 0, 0
+    if self.island_movable then
+        offset_x = self.island_movable._moved_offset_x or 0
+        offset_y = self.island_movable._moved_offset_y or 0
+    end
+    self.island_movable = MovableContainer:new{
+        self.toolbar_frame,
+    }
+    self.island_movable._moved_offset_x = offset_x
+    self.island_movable._moved_offset_y = offset_y
+
     self.canvas[1] = BottomContainer:new{
         -- Keep the island clear of the footer; MovableContainer lets the
         -- user drag it elsewhere if it covers something.
         dimen = Geom:new{ w = Screen:getWidth(), h = Screen:getHeight() - Screen:scaleBySize(40) },
-        MovableContainer:new{
-            self.toolbar_frame,
-        },
+        self.island_movable,
     }
 end
 
@@ -1311,7 +1328,10 @@ end
 function Sketch:refreshIsland()
     if not self.sketch_mode or not self.canvas then return end
     self:buildIsland()
-    UIManager:setDirty(self.canvas, "ui")
+    -- Repaint from the reader up, not just the canvas: the canvas is a
+    -- transparent container, so repainting it alone would draw the new
+    -- island on top of the old one's stale pixels (the "two islands" bug).
+    UIManager:setDirty(self.view.dialog, "ui")
 end
 
 function Sketch:toggleTool()
@@ -1590,7 +1610,7 @@ function Sketch:addToMainMenu(menu_items)
                             self.undo_stack = {}
                             self.redo_stack = {}
                             self:flushSave()
-                            UIManager:setDirty(self.view, "ui")
+                            UIManager:setDirty(self.view.dialog, "ui")
                         end,
                     })
                 end,
@@ -1624,7 +1644,7 @@ function Sketch:clearPageStrokes()
     end
     self:rebuildPageIndex()
     self:flushSave()
-    UIManager:setDirty(self.view, "ui")
+    UIManager:setDirty(self.view.dialog, "ui")
 end
 
 return Sketch

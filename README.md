@@ -213,6 +213,18 @@ KOReader master and tested on a **Boox Go 10.3 gen 1** (Android, EMR pen,
    gated off (fact 5), so patching `_updateWindow` alone converts
    `Screen:refreshFast(region)` into a true partial flush, and the dirty
    rect doubles as a region hint to Onyx's system refresh.
+11. **`UIManager:setDirty(widget, ...)` repaints NOTHING for non-window
+   widgets.** setDirty matches `widget` against the window stack;
+   ReaderView is not a window, so `setDirty(self.view, ...)` never marks
+   anything dirty — it only enqueues the *e-ink refresh*, which then
+   re-displays the stale shadow buffer. This made eraser/undo/redo look
+   dead until something else (dragging the island → MovableContainer's
+   own setDirty) forced a real repaint. The correct target is
+   `self.view.dialog` (= ReaderUI — it's what ReaderView itself passes).
+   Corollary: repainting a *transparent* window (our canvas) does not
+   repaint anything beneath it, so its previous content's pixels stay on
+   screen — that was the "two islands" bug after an island rebuild;
+   repaint from `view.dialog` up instead.
 
 ## Architecture (main.lua, ~1450 lines)
 
@@ -382,16 +394,35 @@ Remaining ideas, in order of expected value:
    and SDL-stylus draft #15344 don't touch Android), so the mode-based
    UX stays necessary either way.
 
+## Bug-fix pass 2026-07-03 (post-overhaul device feedback; not yet re-tested)
+
+1. *"Discard changes" ConfirmBox couldn't be clicked and got inked over*:
+   raw capture claimed contacts regardless of what window was on top.
+   Fix: `rawShouldClaim` requires `UIManager:getTopmostVisibleWidget()`
+   to be the canvas — with any dialog above, contacts flow through normal
+   window routing (dialog gets its taps, nothing inks).
+2. *Eraser/undo/redo invisible until the island was dragged*: classic
+   fact-11 (see above) — `setDirty(self.view, ...)` was refresh-only.
+   Fix: all repaints now target `self.view.dialog`.
+3. *Tool/width toggle spawned a second island at the origin*: two causes —
+   the rebuilt MovableContainer lost its drag offset (fix: offset carried
+   over to the new container), and `setDirty(self.canvas, ...)` didn't
+   repaint beneath the transparent canvas so the old island's pixels
+   stayed (fix: repaint from `view.dialog` up, fact 11 corollary).
+
 ## Known bugs / warts (beyond the by-design limitations above)
 
-- Island's dragged position resets when its labels change (rebuild).
 - Screen rotation or EPUB reflow misplaces strokes (no re-anchoring yet;
   pencil-src has rotation-handling code to steal).
 - If an island drag escapes the island frame in one event, inking can
   start mid-drag (rare; MovableContainer usually keeps the contact).
-- "Nothing to undo/redo" InfoMessage briefly steals input.
+- "Nothing to undo/redo" InfoMessage briefly steals input (but can no
+  longer be inked over, see bug-fix 1).
 - Strokes near the screen bottom draw over the island/footer area.
 - `paintTo` assumes the view is painted at origin 0,0 fullscreen.
+- Eraser hits and undo/redo trigger a full ReaderUI repaint + full-window
+  blit each (rate-limited to 50 ms for the eraser) — correct but heavier
+  than the inking path; could reuse the dirty-rect flush if it feels slow.
 
 ## Feature roadmap (user-agreed priorities)
 
