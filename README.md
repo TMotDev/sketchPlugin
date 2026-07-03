@@ -12,7 +12,7 @@ devices. Written for — and only tested on — an **Onyx Boox Go 10.3**.
 
 ## Videos
 
-_(coming soon)_
+<video controls src="video.mp4" title="Showcase of sketch plugin"></video>
 
 ## What it does
 
@@ -37,7 +37,7 @@ you revisit the page.
 
 ## Install
 
-1. Copy the whole `sketch.koplugin` folder into KOReader's user plugin
+1. Copy the whole `sketch.koplugin` folder (only the `.lua` files) into KOReader's user plugin
    directory. On Android that is the `plugins` folder inside the KOReader
    data directory, typically:
    `/sdcard/koreader/plugins/sketch.koplugin/`
