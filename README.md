@@ -201,9 +201,3 @@ License: **AGPL-3.0**.
   a _window-level_ widget — this plugin uses `self.view.dialog`
   (ReaderUI). Targeting `self.view` enqueues only the e-ink refresh and
   repaints nothing.
-
----
-
-Development notes for maintainers — working environment, verified
-platform facts, measurement how-to, remaining performance ideas — live
-in [DEVNOTES.md](DEVNOTES.md).
