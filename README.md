@@ -354,6 +354,31 @@ principle (hardware pen overlay, composited under the pen before software
 sees anything); the remaining gap is the lock wait + the ~60 Hz input
 rate, not our software path.
 
+### Performance experiment log
+
+One experiment at a time; each gets a toggle, a hypothesis, and a verdict
+after a device test.
+
+- **#1 — direct regional einkUpdate** (2026-07-03; Sketch → Performance →
+  *Direct e-ink refresh (experimental)*; default OFF; setting
+  `sketch_direct_eink`). On Onyx, KOReader never requests partial EPD
+  updates (fact 5) — the panel update for live ink is whenever Onyx's
+  system refresh decides. This toggle makes every live-ink flush also
+  call `android.einkUpdate(fast, delay_fast, x, y, right, bottom)`
+  (constants from `android.getEinkConstants()`; on Onyx fast =
+  PARTIAL+DU = 1; goes through the launcher's reflection into hidden
+  `View.refreshScreen` — the same plumbing full refreshes already use on
+  this device, so it's known to invoke successfully). Hypotheses:
+  (a) ink appears with a fast *fixed* DU waveform instead of the system
+  refresh's choice → lower, more consistent latency; (b) possibly earlier
+  buffer release → lower `lock` in sketch-perf. Risk: the Kotlin side
+  calls `preventSystemRefresh()` (waveform scheme "None") before each
+  request — if partial updates stop appearing outside sketch mode, toggle
+  OFF and trigger a flashing full refresh (or restart KOReader). A/B
+  procedure: draw with it off (note `avg`/`lock` + feel), toggle on,
+  repeat; the sketch-perf line carries `direct=true/false`.
+  **Verdict: PENDING device test.**
+
 Remaining ideas, in order of expected value:
 
 1. **Attack the ~40 ms lock wait.** Zero-code first: set Onyx's per-app

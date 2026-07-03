@@ -197,6 +197,11 @@ local Sketch = InputContainer:extend{
     fast_flush_broken = false,  -- tripped by a runtime failure, sticky per session
     fast_flush_state = "off",   -- for logging/diagnostics
 
+    -- EXPERIMENTAL direct regional e-ink refresh (default off, see the
+    -- "Direct e-ink refresh" section).
+    direct_eink_enabled = false, -- user setting "sketch_direct_eink"
+    direct_eink_fn = nil,        -- closure calling android.einkUpdate, set on install
+
     -- Per-stroke perf counters, dumped to the log at stroke end.
     perf = nil,
 
@@ -218,6 +223,7 @@ function Sketch:init()
         or self.refresh_interval_ms
     self.raw_input_enabled = G_reader_settings:nilOrTrue("sketch_raw_input")
     self.fast_flush_enabled = G_reader_settings:nilOrTrue("sketch_fast_flush")
+    self.direct_eink_enabled = G_reader_settings:isTrue("sketch_direct_eink")
     self.raw_slots = {}
     -- The input/framebuffer wrappers (installed lazily on first sketch-mode
     -- entry, see installRawInput/installFastFlush) hold a reference to their
@@ -286,6 +292,9 @@ function Sketch:enterSketchMode()
     if self.fast_flush_enabled then
         self:installFastFlush()
     end
+    if self.direct_eink_enabled then
+        self:installDirectEink()
+    end
 
     self.canvas = SketchCanvas:new{ sketch = self }
     self:buildIsland()
@@ -293,6 +302,7 @@ function Sketch:enterSketchMode()
     logger.info("Sketch: entered sketch mode; raw input:",
         self.raw_input_enabled and "on" or "off",
         "- fast flush:", self.fast_flush_state,
+        "- direct eink:", self.direct_eink_enabled and "on" or "off",
         "- refresh floor:", self.refresh_interval_ms, "ms")
 end
 
@@ -856,6 +866,51 @@ function Sketch:installFastFlush()
     end
 end
 
+-- ------------------------------------------------------------------------
+-- Direct e-ink refresh (EXPERIMENTAL, default off)
+--
+-- On Onyx, KOReader never requests partial EPD updates: the launcher's
+-- EPD controller reports "full-only", so after our window post the panel
+-- update is whenever/however Onyx's system refresh decides (README
+-- fact 5). But the launcher CAN request regional updates through its
+-- reflection glue (hidden View.refreshScreen — the same path full
+-- refreshes already use, so it's known to work on this device), exposed
+-- to Lua as android.einkUpdate(mode, delay, x, y, right, bottom) with
+-- device constants from android.getEinkConstants() ("fast" = PARTIAL+DU
+-- on Onyx). With this experiment enabled, every live-ink flush
+-- additionally requests a DU update of the stroke region: the hope is
+-- ink drawn with a fast, *fixed* waveform instead of the system's choice,
+-- and possibly earlier buffer release (watch "lock" in sketch-perf).
+--
+-- Recovery if it misbehaves (the Kotlin side invokes a "prevent system
+-- refresh" reflection before refreshing): toggle it off in Sketch →
+-- Performance, then trigger a flashing full refresh or restart KOReader.
+-- ------------------------------------------------------------------------
+
+function Sketch:installDirectEink()
+    if self.direct_eink_fn then return end
+    local ok, err = pcall(function()
+        local android = require("android")
+        assert(android.isEink(), "not an e-ink device")
+        assert(type(android.getEinkConstants) == "function", "no getEinkConstants")
+        local _full, _partial, _full_ui, _partial_ui, fast,
+            _delay_page, _delay_ui, delay_fast = android.getEinkConstants()
+        fast = tonumber(fast)
+        delay_fast = tonumber(delay_fast) or 0
+        assert(fast, "no fast e-ink mode constant")
+        self.direct_eink_fn = function(x, y, w, h)
+            -- Same right/bottom convention as framebuffer_android._updatePartial.
+            android.einkUpdate(fast, delay_fast, x, y, x + w, y + h)
+        end
+        logger.info("Sketch: direct eink refresh installed, fast mode =", fast,
+            "delay =", delay_fast)
+    end)
+    if not ok then
+        self.direct_eink_enabled = false
+        logger.warn("Sketch: direct eink refresh unavailable:", err)
+    end
+end
+
 -- The dirty-rect path is only valid while coordinates map 1:1 onto the
 -- window buffer: no viewport (full_bb) and no software rotation.
 function Sketch:canFastFlush()
@@ -953,12 +1008,13 @@ function Sketch:finalizeCurrentStroke()
         local dur_ms = time.to_ms(time.now() - p.t_start)
         local nf = p.flushes > 0 and p.flushes or 1
         logger.info(string.format(
-            "sketch-perf: stroke %d pts (%d ev) in %d ms; %d flushes (%d fast) avg %.1f max %.1f ms; lock %.1f blit %.1f ms; raw=%s flush=%s interval=%d",
+            "sketch-perf: stroke %d pts (%d ev) in %d ms; %d flushes (%d fast) avg %.1f max %.1f ms; lock %.1f blit %.1f ms; raw=%s flush=%s direct=%s interval=%d",
             #stroke.points, p.frames, dur_ms,
             p.flushes, p.fast_flushes,
             p.flush_ms / nf, p.max_flush_ms,
             p.lock_ms / nf, p.blit_ms / nf,
             tostring(self.raw_input_enabled), self.fast_flush_state,
+            tostring(self.direct_eink_enabled),
             self.current_refresh_interval or self.refresh_interval_ms))
     end
 end
@@ -1021,6 +1077,13 @@ function Sketch:maybeRefresh(force)
     end
     Screen:refreshFast(rx, ry, rw, rh)
     Screen._sketch_dirty_rect = nil -- consumed by the patched _updateWindow
+    if self.direct_eink_enabled and self.direct_eink_fn then
+        local ok_eink, eink_err = pcall(self.direct_eink_fn, rx, ry, rw, rh)
+        if not ok_eink then
+            self.direct_eink_enabled = false
+            logger.warn("Sketch: direct eink refresh failed, disabled:", eink_err)
+        end
+    end
     local cost_ms = time.to_ms(time.now() - t0)
 
     self.current_refresh_interval = math.max(self.refresh_interval_ms, cost_ms * 1.5)
@@ -1636,6 +1699,18 @@ function Sketch:addToMainMenu(menu_items)
                             G_reader_settings:saveSetting("sketch_fast_flush", self.fast_flush_enabled)
                             if self.fast_flush_enabled and self.sketch_mode then
                                 self:installFastFlush()
+                            end
+                        end,
+                    },
+                    {
+                        text = _("Direct e-ink refresh (experimental)"),
+                        help_text = _("Explicitly request a fast (DU) e-ink update of the stroke area on every live-ink flush, instead of leaving the panel update to the system refresh. If the screen stops updating outside sketch mode, disable this and trigger a flashing full refresh (or restart KOReader)."),
+                        checked_func = function() return self.direct_eink_enabled end,
+                        callback = function()
+                            self.direct_eink_enabled = not self.direct_eink_enabled
+                            G_reader_settings:saveSetting("sketch_direct_eink", self.direct_eink_enabled)
+                            if self.direct_eink_enabled then
+                                self:installDirectEink()
                             end
                         end,
                     },
