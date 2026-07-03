@@ -1359,37 +1359,66 @@ end
 -- Width picker: a small list anchored to the island's width button —
 -- opens upward when the island sits in the lower half of the screen (its
 -- default position), downward when it has been dragged to the top.
+-- Every step is guarded: an unexplained on-device crash was reported on
+-- this button (traceback never captured), so if anything errors we log
+-- the reason ("width picker failed" in logcat) and fall back to cycling
+-- the width like the button originally did — the feature keeps working
+-- and the log tells us what actually broke.
 function Sketch:showWidthPicker()
-    local dialog
-    local buttons = {}
-    for _, w in ipairs(PEN_WIDTHS) do
-        table.insert(buttons, {
-            {
-                text = (w == self.pen_width and "\u{2713} " or "") .. T(_("%1 px"), w),
-                callback = function()
-                    self.pen_width = w
-                    G_reader_settings:saveSetting("sketch_pen_width", w)
-                    UIManager:close(dialog)
-                    self:refreshIsland()
-                end,
-            },
-        })
-    end
-    dialog = ButtonDialog:new{
-        buttons = buttons,
-        anchor = function()
-            local d = self.width_button and self.width_button.dimen
-            if not d then return end -- island not painted yet: centered fallback
-            if d.y + math.floor(d.h / 2) > math.floor(Screen:getHeight() / 2) then
-                -- Drop-up: dialog bottom sits just above the button.
-                return Geom:new{ x = d.x, y = d.y - Size.padding.small, w = 0, h = 0 }
-            else
-                -- Drop-down: dialog top sits just below the button.
-                return Geom:new{ x = d.x, y = d.y + d.h + Size.padding.small, w = 0, h = 0 }, true
+    local ok, err = pcall(function()
+        local dialog
+        local buttons = {}
+        for _, w in ipairs(PEN_WIDTHS) do
+            table.insert(buttons, {
+                {
+                    text = (w == self.pen_width and "\u{2713} " or "") .. T(_("%1 px"), w),
+                    callback = function()
+                        self.pen_width = w
+                        G_reader_settings:saveSetting("sketch_pen_width", w)
+                        UIManager:close(dialog)
+                        self:refreshIsland()
+                    end,
+                },
+            })
+        end
+        dialog = ButtonDialog:new{
+            buttons = buttons,
+            shrink_unneeded_width = true,
+            anchor = function()
+                -- Runs at paint time (outside the pcall above): never let
+                -- anchoring break the paint — any problem returns nil,
+                -- which just means a plain centered dialog.
+                local ok_anchor, anchor, pop_down = pcall(function()
+                    local d = self.width_button and self.width_button.dimen
+                    if not d then return nil end
+                    if d.y + math.floor(d.h / 2) > math.floor(Screen:getHeight() / 2) then
+                        -- Drop-up: dialog bottom sits just above the button.
+                        return Geom:new{ x = d.x, y = d.y - Size.padding.small, w = 0, h = 0 }
+                    else
+                        -- Drop-down: dialog top sits just below the button.
+                        return Geom:new{ x = d.x, y = d.y + d.h + Size.padding.small, w = 0, h = 0 }, true
+                    end
+                end)
+                if not ok_anchor then
+                    logger.warn("Sketch: width picker anchor failed:", anchor)
+                    return nil
+                end
+                return anchor, pop_down
+            end,
+        }
+        UIManager:show(dialog)
+    end)
+    if not ok then
+        logger.err("Sketch: width picker failed, falling back to cycling:", err)
+        for i, w in ipairs(PEN_WIDTHS) do
+            if w == self.pen_width then
+                self.pen_width = PEN_WIDTHS[i % #PEN_WIDTHS + 1]
+                break
             end
-        end,
-    }
-    UIManager:show(dialog)
+        end
+        G_reader_settings:saveSetting("sketch_pen_width", self.pen_width)
+        self:refreshIsland()
+    end
 end
 
 function Sketch:onClearButton()
