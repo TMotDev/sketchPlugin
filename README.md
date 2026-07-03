@@ -12,6 +12,10 @@ devices. Written for — and only tested on — an **Onyx Boox Go 10.3**.
 
 ## Videos
 
+Video compares FreeMark tool and the koreader drawing plugin.
+The plugin is way slower than FreeMark but usable enough for my case.
+One advantage of the plugin is that all the drawings are saved in pages instead of in picture gallery as a PNG.
+
 https://github.com/user-attachments/assets/55a18c16-76dc-457c-9f91-60946ec79331
 
 ## What it does
