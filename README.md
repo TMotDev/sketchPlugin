@@ -12,7 +12,7 @@ devices. Written for — and only tested on — an **Onyx Boox Go 10.3**.
 
 ## Videos
 
-*(coming soon)*
+_(coming soon)_
 
 ## What it does
 
@@ -48,7 +48,7 @@ you revisit the page.
 Recommended setup:
 
 - Assign the toggle to a gesture: menu → Settings → Taps and gestures →
-  Gesture manager → e.g. *Two-finger tap, bottom right* → General →
+  Gesture manager → e.g. _Two-finger tap, bottom right_ → General →
   **Sketch: toggle drawing mode**.
 - On Onyx/Boox devices, set a fast per-app refresh mode for KOReader
   (system E-ink center / app optimization → refresh mode → Speed, A2 or
@@ -82,7 +82,7 @@ Recommended setup:
 
 - Pen and finger are treated identically in sketch mode (Android input
   limitation; palm rejection relies on the device's EMR palm rejection).
-- Strokes are anchored to the page *as currently laid out*. For EPUBs,
+- Strokes are anchored to the page _as currently laid out_. For EPUBs,
   changing font size/margins/rotation after drawing will misplace
   sketches (an xpointer is stored per stroke for future re-anchoring).
 - Fast refresh while drawing is binary black/white; a clean grayscale
@@ -135,7 +135,7 @@ License: **AGPL-3.0**.
   setting `sketch_raw_input`): `Device.input.handleTouchEv` and
   `Input.resetState` are wrapped once (lazily, on first sketch-mode
   entry; wrappers are owner-rebound across plugin instances, never
-  stacked). At each SYN_REPORT the frame's MTSlots are examined *before*
+  stacked). At each SYN*REPORT the frame's MTSlots are examined \_before*
   gesture detection: a lone contact starting on the page is **claimed** —
   every point feeds the stroke engine directly (no PAN_THRESHOLD, no
   gesture round-trip) and the slot is stripped from MTSlots so the
@@ -194,49 +194,9 @@ License: **AGPL-3.0**.
   a shallow snapshot of the strokes array taken at mode entry (stroke
   objects are never mutated after finalization).
 - Repaint rule (learned the hard way): `UIManager:setDirty` must target
-  a *window-level* widget — this plugin uses `self.view.dialog`
+  a _window-level_ widget — this plugin uses `self.view.dialog`
   (ReaderUI). Targeting `self.view` enqueues only the e-ink refresh and
   repaints nothing.
-
-## Performance experiment log *(dev section — remove in the final version)*
-
-Summary of the measured baseline on the Go 10.3 (details in
-[DEVNOTES.md](DEVNOTES.md)): input arrives at ~60 Hz and raw capture
-keeps every point; a live-ink flush is a plain window lock + full 18 MB
-blit + post at **avg 21–25 ms → ~25 flushes/s**; no einkUpdate is
-involved (Onyx runs KOReader as "full-only": the system refresh displays
-the ink, so the per-app refresh mode matters a lot).
-
-- **#1 — direct regional einkUpdate** (2026-07-03). Made every live-ink
-  flush also call `android.einkUpdate(fast=PARTIAL+DU, delay_fast, x, y,
-  right, bottom)` through the launcher's reflection into hidden
-  `View.refreshScreen`, hoping for a fixed fast waveform and earlier
-  buffer release. **Verdict: FAILED — code removed.** Measurably slower
-  (avg 56–58 ms vs 46–50 ms without), and strongly suspected of
-  corrupting the window/EPD state: immediately after its use the
-  dirty-rect lock started failing permanently, and a heavy dialog paint
-  aborted natively (`FORTIFY: pthread_mutex_lock called on a destroyed
-  mutex`). The Kotlin side's `preventSystemRefresh()` (waveform scheme
-  "None" via reflection) is the suspected culprit. Do not reintroduce.
-- **#2 — drop the dirty-rect flush, keep plain full blits**
-  (2026-07-03). Accidental A/B from device logs: full-blit flushes avg
-  21–25 ms / interval 34–43 ms vs dirty-rect 46–58 ms / interval
-  66–91 ms — the dirty-rect lock's front-buffer copy-back serializes
-  with the system refresh, while a plain dequeue doesn't (the 18 MB blit
-  itself is only ~8 ms). **Verdict: ADOPTED — `sketch_fast_flush` now
-  defaults OFF.** User-confirmed faster, especially with a fast Onyx
-  per-app refresh mode. Live ink now flushes ~25×/s.
-
-## Feature roadmap *(dev section — remove in the final version)*
-
-1. Performance — usable after the 2026-07-03 overhaul + experiment #2;
-   further ideas listed in [DEVNOTES.md](DEVNOTES.md).
-2. Width-picker crash: guarded + self-diagnosing (see Limitations);
-   awaiting a clean re-test, fix properly once a `width picker failed`
-   log line surfaces.
-3. Pen/finger discrimination via a koreader-base input patch —
-   explicitly LOW priority; the mode-based UX is acceptable.
-4. Nice-to-haves: partial-stroke eraser, color support for color e-ink.
 
 ---
 
